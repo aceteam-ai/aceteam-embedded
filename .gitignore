@@ -1,0 +1,11 @@
+# ufbt / firmware build artifacts
+.ufbt/
+dist/
+build/
+*.fap
+*.fap.debug
+
+# python
+__pycache__/
+*.pyc
+.venv/

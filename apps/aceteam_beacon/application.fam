@@ -1,0 +1,9 @@
+App(
+    appid="aceteam_beacon",
+    name="AceTeam Beacon",
+    apptype=FlipperAppType.EXTERNAL,
+    entry_point="aceteam_beacon_app",
+    stack_size=4 * 1024,
+    fap_category="Tools",
+    fap_description="Physical approve/deny gate for agent actions, over the CLI.",
+)
