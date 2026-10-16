@@ -123,6 +123,12 @@ static void beacon_input_callback(InputEvent* input, void* ctx) {
 static void beacon_cli_approve(PipeSide* pipe, FuriString* args, void* context) {
     Beacon* b = context;
 
+    // Drop any decision left over from a previous cycle that ended by host
+    // disconnect at the same moment as a press. Without this reset the stale
+    // decision would be consumed immediately, approving or denying an action
+    // nobody saw.
+    furi_message_queue_reset(b->decision_queue);
+
     BeaconEvent ev = {.type = BeaconEventRequest};
     const char* a = furi_string_get_cstr(args);
     if(a == NULL || *a == '\0') a = "(unspecified action)";
@@ -211,6 +217,7 @@ int32_t aceteam_beacon_app(void* p) {
         } else if(ev.type == BeaconEventCancel) {
             furi_mutex_acquire(b->mutex, FuriWaitForever);
             b->pending = false;
+            b->pending_from_cli = false;
             furi_mutex_release(b->mutex);
             view_port_update(b->view_port);
 
