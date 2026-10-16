@@ -157,14 +157,27 @@ static void post_changed(Status* s) {
 }
 
 // Read one '\n'-terminated line from the pipe into buf (NUL-terminated, '\r'
-// stripped). Returns false if the pipe broke or an ETX byte (0x03) arrived,
-// which both mean the host is gone.
-static bool read_line(PipeSide* pipe, char* buf, size_t cap) {
+// stripped). Returns false if the host is gone (pipe broken or ETX) or the app
+// is tearing down. Polls rather than blocking in pipe_receive: an idle host
+// leaves no bytes to read, and a blocking read would never notice a Back-press
+// shutdown, hanging the app on exit.
+static bool read_line(Status* s, PipeSide* pipe, char* buf, size_t cap) {
     size_t n = 0;
     for(;;) {
+        furi_mutex_acquire(s->mutex, FuriWaitForever);
+        bool stop = s->shutting_down;
+        furi_mutex_release(s->mutex);
+        if(stop) return false;
+
+        if(cli_is_pipe_broken_or_is_etx_next_char(pipe)) return false;
+
+        if(pipe_bytes_available(pipe) == 0) {
+            furi_delay_ms(10);
+            continue;
+        }
         char c;
-        if(pipe_receive(pipe, &c, 1) != 1) return false; // pipe broken
-        if(c == 0x03) return false; // host sent ETX / Ctrl-C
+        if(pipe_receive(pipe, &c, 1) != 1) return false;
+        if(c == 0x03) return false; // ETX / Ctrl-C
         if(c == '\r') continue;
         if(c == '\n') break;
         if(n < cap - 1) buf[n++] = c;
@@ -211,7 +224,7 @@ static void status_cli(PipeSide* pipe, FuriString* args, void* context) {
     StatusItem* build = malloc(sizeof(StatusItem) * MAX_ITEMS);
     size_t n = 0;
     char line[LINE_MAX];
-    while(read_line(pipe, line, sizeof(line))) {
+    while(read_line(s, pipe, line, sizeof(line))) {
         if(line[0] == '.' && line[1] == '\0') {
             commit_snapshot(s, build, n);
             n = 0;
@@ -318,9 +331,9 @@ int32_t aceteam_status_app(void* p) {
         }
     }
 
-    // Stop new handlers, then wake and wait for any in-flight handler before
-    // freeing state it reads. A pushing host keeps status_cli blocked in
-    // read_line; deleting the command breaks its pipe so read_line returns.
+    // Stop new handlers, then wait for any in-flight handler before freeing
+    // state it reads. read_line polls shutting_down, so an idle-but-connected
+    // handler returns within one poll instead of blocking forever on the pipe.
     furi_mutex_acquire(s->mutex, FuriWaitForever);
     s->shutting_down = true;
     furi_mutex_release(s->mutex);
