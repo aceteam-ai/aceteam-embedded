@@ -75,6 +75,8 @@ typedef struct {
     FuriMutex* mutex; // guards the fields below (read by the draw thread)
     bool pending;
     bool pending_from_cli; // true: a CLI handler is blocked waiting for the decision
+    bool cli_running; // true while a CLI handler is live (gates safe teardown)
+    bool shutting_down; // true once the app is exiting; new handlers fail closed
     char action[ACTION_MAX];
     uint32_t approvals;
     uint32_t denials;
@@ -123,6 +125,19 @@ static void beacon_input_callback(InputEvent* input, void* ctx) {
 static void beacon_cli_approve(PipeSide* pipe, FuriString* args, void* context) {
     Beacon* b = context;
 
+    // Refuse new requests once the app is tearing down, and otherwise mark a
+    // handler live, so the main loop never frees state this thread still reads.
+    // Fail closed if we arrive during shutdown.
+    furi_mutex_acquire(b->mutex, FuriWaitForever);
+    bool shutting_down = b->shutting_down;
+    if(!shutting_down) b->cli_running = true;
+    furi_mutex_release(b->mutex);
+    if(shutting_down) {
+        const char* msg = "RESULT deny\r\n";
+        pipe_send(pipe, msg, strlen(msg));
+        return;
+    }
+
     // Drop any decision left over from a previous cycle that ended by host
     // disconnect at the same moment as a press. Without this reset the stale
     // decision would be consumed immediately, approving or denying an action
@@ -137,6 +152,7 @@ static void beacon_cli_approve(PipeSide* pipe, FuriString* args, void* context) 
     furi_message_queue_put(b->event_queue, &ev, FuriWaitForever);
 
     Decision d = DecisionPending;
+    bool cancelled = false;
     while(d == DecisionPending) {
         if(furi_message_queue_get(b->decision_queue, &d, 100) == FuriStatusOk) {
             break;
@@ -144,14 +160,23 @@ static void beacon_cli_approve(PipeSide* pipe, FuriString* args, void* context) 
         if(cli_is_pipe_broken_or_is_etx_next_char(pipe)) {
             BeaconEvent cancel = {.type = BeaconEventCancel};
             furi_message_queue_put(b->event_queue, &cancel, FuriWaitForever);
-            const char* msg = "RESULT cancelled\r\n";
-            pipe_send(pipe, msg, strlen(msg));
-            return;
+            cancelled = true;
+            break;
         }
     }
 
-    const char* result = (d == DecisionApprove) ? "RESULT approve\r\n" : "RESULT deny\r\n";
+    const char* result;
+    if(cancelled) {
+        result = "RESULT cancelled\r\n";
+    } else {
+        result = (d == DecisionApprove) ? "RESULT approve\r\n" : "RESULT deny\r\n";
+    }
     pipe_send(pipe, result, strlen(result));
+
+    // Released last: after this the main loop is free to tear down.
+    furi_mutex_acquire(b->mutex, FuriWaitForever);
+    b->cli_running = false;
+    furi_mutex_release(b->mutex);
 }
 
 // Resolve a decision made on the device. Posts to the CLI handler only when a
@@ -181,6 +206,8 @@ int32_t aceteam_beacon_app(void* p) {
     b->mutex = furi_mutex_alloc(FuriMutexTypeNormal);
     b->pending = false;
     b->pending_from_cli = false;
+    b->cli_running = false;
+    b->shutting_down = false;
     b->action[0] = '\0';
     b->approvals = 0;
     b->denials = 0;
@@ -251,7 +278,26 @@ int32_t aceteam_beacon_app(void* p) {
         }
     }
 
+    // Stop new handlers, then wake and wait for any in-flight handler before
+    // freeing the queues and context it reads. A Back press on the idle screen
+    // can exit the loop while a handler is already blocked on decision_queue;
+    // without this join that handler would touch freed memory.
+    furi_mutex_acquire(b->mutex, FuriWaitForever);
+    b->shutting_down = true;
+    furi_mutex_release(b->mutex);
+
     cli_registry_delete_command(b->cli, APPROVE_CMD);
+
+    for(;;) {
+        furi_mutex_acquire(b->mutex, FuriWaitForever);
+        bool busy = b->cli_running;
+        furi_mutex_release(b->mutex);
+        if(!busy) break;
+        Decision deny = DecisionDeny; // unblock a handler waiting on the queue
+        furi_message_queue_put(b->decision_queue, &deny, 0);
+        furi_delay_ms(10);
+    }
+
     furi_record_close(RECORD_CLI);
 
     gui_remove_view_port(b->gui, b->view_port);
