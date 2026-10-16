@@ -110,6 +110,25 @@ Telegram. The beacon adds a **physical** surface: a button you press, on a devic
 you carry, for the highest-risk actions. "The agent literally cannot proceed
 until a human presses the button" is the demo.
 
+## AceTeam Status (companion)
+
+A second app, `apps/aceteam_status/`, turns the device into a pocket dashboard.
+A host pushes a snapshot of live state (agents running, PRs awaiting review, CI
+red/green, ACET balance) over the same Flipper CLI, and the device renders it as
+a compact, scrollable list.
+
+```bash
+cd apps/aceteam_status
+ufbt && ufbt launch          # build + run; also installs to Apps -> Tools
+# then push a mock snapshot from the host:
+python bridge/aceteam_status_bridge.py --port /dev/ttyACM0
+# or see it with no host: on the device, press OK on the idle screen for a demo
+```
+
+Honest scope: this is a **read-only display**. The device does not verify the
+numbers, authenticate the host, or prove the state is current. It is not on the
+trust ladder above. Signing pushed state would ride on the same work as L3.
+
 ## Roadmap
 
 - **L1**: PIN entry on the device (user-set), as an authentication factor.

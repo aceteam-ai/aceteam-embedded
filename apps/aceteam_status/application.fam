@@ -1,0 +1,9 @@
+App(
+    appid="aceteam_status",
+    name="AceTeam Status",
+    apptype=FlipperAppType.EXTERNAL,
+    entry_point="aceteam_status_app",
+    stack_size=4 * 1024,
+    fap_category="Tools",
+    fap_description="Pocket dashboard for agent / PR / CI / balance status, pushed over the CLI.",
+)
