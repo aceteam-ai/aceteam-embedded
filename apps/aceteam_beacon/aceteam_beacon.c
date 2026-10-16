@@ -187,7 +187,10 @@ int32_t aceteam_beacon_app(void* p) {
     gui_add_view_port(b->gui, b->view_port, GuiLayerFullscreen);
 
     b->cli = furi_record_open(RECORD_CLI);
-    cli_registry_add_command(b->cli, APPROVE_CMD, CliCommandFlagDefault, beacon_cli_approve, b);
+    // ParallelSafe is required: without it the CLI refuses the command with
+    // "this command cannot be run while an application is open", and this app
+    // is always the open application while it is handling the command.
+    cli_registry_add_command(b->cli, APPROVE_CMD, CliCommandFlagParallelSafe, beacon_cli_approve, b);
 
     BeaconEvent ev;
     bool running = true;
